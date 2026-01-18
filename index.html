@@ -38,6 +38,7 @@
             align-items: center;
             justify-content: center;
             border-color: #c4b5fd;
+            text-align: center;
         }
         .choice-card {
             display: flex;
@@ -193,6 +194,21 @@
             font-size: 1.2em;
             color: #4a5568;
         }
+        
+        /* Inline fraction for word problems */
+        .fraction-inline {
+            display: inline-flex;
+            vertical-align: middle;
+            font-size: 1.1em;
+            margin: 0 0.2em;
+        }
+        .fraction-inline .fraction-whole {
+            font-size: 1em;
+            margin-right: 0.1em;
+        }
+        .fraction-inline .fraction-part {
+            font-size: 0.7em;
+        }
     </style>
 </head>
 <body class="flex items-center justify-center min-h-screen p-2 lg:p-4">
@@ -341,6 +357,12 @@
                 return this.w === other.w && this.n === other.n && this.d === other.d;
             }
 
+            toString() {
+                if (this.w > 0 && this.n > 0) return `${this.w} ${this.n}/${this.d}`;
+                if (this.w > 0) return `${this.w}`;
+                return `${this.n}/${this.d}`;
+            }
+
             render(sizeClass = 'text-4xl lg:text-6xl') {
                 let html = `<div class="fraction ${sizeClass}">`;
                 if (this.w > 0) {
@@ -359,6 +381,10 @@
                 }
                 html += `</div>`;
                 return html;
+            }
+
+            renderInline() {
+                 return this.render('fraction-inline');
             }
         }
 
@@ -539,67 +565,150 @@
             return Math.floor(Math.random() * (max - min + 1)) + min;
         }
 
-        function generateMixedFraction() {
-            const w = Math.random() < 0.2 ? 0 : getRandomInt(1, 4);
-            const dens = [2, 3, 4, 5, 6, 8, 9, 10];
+        function generateMixedFraction(simpleMode = false) {
+            // Updated for bigger fractions, but allows simple mode for word problems
+            const w = Math.random() < 0.2 ? 0 : getRandomInt(1, 12);
+            let dens;
+            if (simpleMode) {
+                dens = [2, 3, 4, 5, 6, 8]; // Under 9
+            } else {
+                dens = [2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 16, 20];
+            }
             const d = dens[Math.floor(Math.random() * dens.length)];
             const n = getRandomInt(1, d - 1);
             return new Fraction(w, n, d);
         }
 
+        function getValidMathComponents(op, simpleMode = false) {
+            let f1, f2;
+            let safe = 0;
+            
+            if (op === '+') {
+                 // Ensure sum of fractions < 1 to avoid carrying over
+                do {
+                   f1 = generateMixedFraction(simpleMode);
+                   f2 = generateMixedFraction(simpleMode);
+                   safe++;
+                } while ((f1.n / f1.d) + (f2.n / f2.d) >= 1 && safe < 200);
+                if (safe >= 200) { f1 = new Fraction(1, 1, 5); f2 = new Fraction(1, 1, 5); }
+            } else {
+                 // Subtraction logic
+                 f1 = generateMixedFraction(simpleMode);
+                 f2 = generateMixedFraction(simpleMode);
+
+                 // Ensure whole numbers are ordered f1 >= f2
+                 if (f2.w > f1.w) { [f1, f2] = [f2, f1]; }
+                 
+                 // Check fractional parts to prevent borrowing
+                 const frac1 = f1.n * f2.d;
+                 const frac2 = f2.n * f1.d;
+
+                 if (frac2 > frac1) {
+                     const tempN = f1.n; const tempD = f1.d;
+                     f1.n = f2.n; f1.d = f2.d;
+                     f2.n = tempN; f2.d = tempD;
+                 }
+
+                 if (f1.w === f2.w && f1.n === f2.n && f1.d === f2.d) {
+                     f1.w += 1;
+                 }
+            }
+            return { f1, f2 };
+        }
+
+        function getValidWordProblemComponents() {
+            // Specialized generator that ensures BOTH Add (No Carry) AND Sub (No Borrow)
+            // This guarantees the inverse operation distractor is also solvable without complex regrouping.
+            let f1, f2;
+            let safe = 0;
+            do {
+                f1 = generateMixedFraction(true); // Simple fractions
+                f2 = generateMixedFraction(true);
+                
+                // Ensure f1 >= f2 for subtraction safety base
+                if ((f1.w + f1.n/f1.d) < (f2.w + f2.n/f2.d)) {
+                    [f1, f2] = [f2, f1];
+                }
+
+                // Check Addition Safety (No carry over)
+                const sumFrac = (f1.n * f2.d + f2.n * f1.d) / (f1.d * f2.d);
+                const addSafe = sumFrac < 1;
+
+                // Check Subtraction Safety (No borrowing)
+                // Since f1 >= f2 overall, we just need to make sure f1's fraction >= f2's fraction
+                // Cross multiply: n1/d1 >= n2/d2  => n1*d2 >= n2*d1
+                const subSafe = (f1.n * f2.d) >= (f2.n * f1.d);
+
+                if (addSafe && subSafe) return { f1, f2 };
+
+                safe++;
+            } while (safe < 500);
+            
+            // Fallback if random gen fails often
+            return { f1: new Fraction(2, 2, 3), f2: new Fraction(1, 1, 3) };
+        }
+
         function generateQuestionDeck() {
             questionDeck = [];
+            const usedSignatures = new Set();
             
-            // 10 Specific Questions
-            for(let i=0; i<10; i++) {
-                questionDeck.push({
-                    type: 'specific',
-                    f1: new Fraction(0, 2, 9),
-                    f2: new Fraction(0, 1, 3),
-                    op: '+'
-                });
+            // Uniqueness Check Helper
+            function isUnique(f1, f2, op) {
+                const sig = `${f1.toString()}${op}${f2.toString()}`;
+                if (usedSignatures.has(sig)) return false;
+                usedSignatures.add(sig);
+                return true;
             }
+            
+            // 1. 7 Unique Word Problems
+            const names = ["Sam", "Alex", "Jo", "Pat", "Kim", "Mia", "Leo", "Max", "Ivy", "Ben"];
+            const scenarios = [
+                { unit: "miles", verb: "ran" },
+                { unit: "cups of flour", verb: "used" },
+                { unit: "hours", verb: "studied" },
+                { unit: "pounds of apples", verb: "picked" },
+                { unit: "gallons of water", verb: "drank" },
+                { unit: "inches", verb: "grew" }
+            ];
 
-            // 20 Random Mixed Fraction Questions
-            for(let i=0; i<20; i++) {
+            let wpCount = 0;
+            while(wpCount < 7) {
                 const op = Math.random() > 0.5 ? '+' : '-';
-                let f1, f2;
+                // Use strict generator for word problems
+                const { f1, f2 } = getValidWordProblemComponents();
+                
+                if (!isUnique(f1, f2, op)) continue;
+
+                const name1 = names[getRandomInt(0, names.length-1)];
+                let name2 = names[getRandomInt(0, names.length-1)];
+                while(name1 === name2) name2 = names[getRandomInt(0, names.length-1)];
+                
+                const scenario = scenarios[getRandomInt(0, scenarios.length-1)];
+                let text = "";
 
                 if (op === '+') {
-                    // Ensure sum of fractions < 1 to avoid carrying over
-                    let safe = 0;
-                    do {
-                       f1 = generateMixedFraction();
-                       f2 = generateMixedFraction();
-                       safe++;
-                    } while ((f1.n / f1.d) + (f2.n / f2.d) >= 1 && safe < 100);
-                    
-                    // Fallback
-                    if (safe >= 100) { f1 = new Fraction(1, 1, 5); f2 = new Fraction(1, 1, 5); }
+                    text = `${name1} ${scenario.verb} ${f1.renderInline()} ${scenario.unit}. ${name2} ${scenario.verb} ${f2.renderInline()} ${scenario.unit}. How many ${scenario.unit} did they ${scenario.verb} in total?`;
                 } else {
-                    f1 = generateMixedFraction();
-                    f2 = generateMixedFraction();
-
-                    // Ensure whole numbers are ordered f1 >= f2
-                    if (f2.w > f1.w) {
-                        [f1, f2] = [f2, f1]; 
-                    }
-                    
-                    // Check fractional parts to prevent borrowing
-                    // We compare n1/d1 with n2/d2 by cross multiplying
-                    const frac1 = f1.n * f2.d;
-                    const frac2 = f2.n * f1.d;
-
-                    if (frac2 > frac1) {
-                        const tempN = f1.n; const tempD = f1.d;
-                        f1.n = f2.n; f1.d = f2.d;
-                        f2.n = tempN; f2.d = tempD;
-                    }
-
-                    if (f1.w === f2.w && f1.n === f2.n && f1.d === f2.d) {
-                        f1.w += 1;
-                    }
+                    text = `${name1} ${scenario.verb} ${f1.renderInline()} ${scenario.unit}. ${name2} ${scenario.verb} ${f2.renderInline()} ${scenario.unit}. How many more ${scenario.unit} did ${name1} ${scenario.verb}?`;
                 }
+
+                questionDeck.push({
+                    type: 'word',
+                    text: text,
+                    f1: f1,
+                    f2: f2,
+                    op: op
+                });
+                wpCount++;
+            }
+
+            // 2. 23 Unique Random Mixed Fraction Questions (Standard Mode)
+            let eqCount = 0;
+            while(eqCount < 23) {
+                const op = Math.random() > 0.5 ? '+' : '-';
+                const { f1, f2 } = getValidMathComponents(op, false); // False = Allow large fractions
+                
+                if (!isUnique(f1, f2, op)) continue;
                 
                 questionDeck.push({
                     type: 'random',
@@ -607,8 +716,10 @@
                     f2: f2,
                     op: op
                 });
+                eqCount++;
             }
 
+            // Shuffle
             for (let i = questionDeck.length - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
                 [questionDeck[i], questionDeck[j]] = [questionDeck[j], questionDeck[i]];
@@ -704,6 +815,25 @@
             else result = qData.f1.sub(qData.f2);
 
             let distractors = [];
+            
+            // Smart Distractor Logic for Word Problems
+            // Add the answer for the INVERSE operation as a choice
+            if (qData.type === 'word') {
+                let inverseRes;
+                if (qData.op === '+') {
+                    // Distractor is subtraction
+                    inverseRes = qData.f1.sub(qData.f2);
+                } else {
+                    // Distractor is addition
+                    inverseRes = qData.f1.add(qData.f2);
+                }
+                
+                if (!inverseRes.isEqual(result)) {
+                    distractors.push(inverseRes);
+                }
+            }
+
+            // Fill remaining distractors
             while(distractors.length < 2) {
                 const method = Math.random();
                 let d;
@@ -733,15 +863,24 @@
                 correctIndex: answerOptions.findIndex(opt => opt.isEqual(result))
             };
 
-            questionArea.innerHTML = `
-                <div class="flex items-center justify-center space-x-4 text-5xl lg:text-7xl">
-                    ${qData.f1.render()}
-                    <span class="operator font-lilita text-slate-500">${qData.op}</span>
-                    ${qData.f2.render()}
-                    <span class="operator font-lilita text-slate-500">=</span>
-                    <span class="font-lilita text-indigo-400">?</span>
-                </div>
-            `;
+            // Render logic
+            if (qData.type === 'word') {
+                questionArea.innerHTML = `
+                    <div class="text-3xl lg:text-5xl font-lilita text-slate-700 leading-snug px-4">
+                        ${qData.text}
+                    </div>
+                `;
+            } else {
+                questionArea.innerHTML = `
+                    <div class="flex items-center justify-center space-x-4 text-5xl lg:text-7xl">
+                        ${qData.f1.render()}
+                        <span class="operator font-lilita text-slate-500">${qData.op}</span>
+                        ${qData.f2.render()}
+                        <span class="operator font-lilita text-slate-500">=</span>
+                        <span class="font-lilita text-indigo-400">?</span>
+                    </div>
+                `;
+            }
 
             choices.forEach((c, idx) => {
                 c.val.innerHTML = answerOptions[idx].render();
