@@ -84,9 +84,18 @@
             display: block !important; /* Force show when revealed */
         }
         
-        /* Updated specificity to ensure token hides */
         .team-token-disc.hidden-token {
             display: none !important;
+        }
+
+        /* Timer pulse animation */
+        @keyframes pulse-red {
+            0%, 100% { color: #fecaca; }
+            50% { color: #ef4444; }
+        }
+        .timer-low {
+            animation: pulse-red 1s infinite;
+            font-weight: 800;
         }
 
         .token-start-zone {
@@ -215,7 +224,11 @@
         <div id="game-section" class="hidden w-full flex-grow flex flex-col">
             <!-- Top Controls -->
             <div class="flex justify-between items-center mb-2 px-2">
-                 <div class="text-white font-lilita text-xl tracking-wider">Question <span id="q-number">1</span>/30</div>
+                 <div class="flex items-center gap-4">
+                     <div class="text-white font-lilita text-xl tracking-wider">Question <span id="q-number">1</span>/30</div>
+                     <!-- Timer Display -->
+                     <div id="timer-display" class="bg-white/20 backdrop-blur-sm border-2 border-white/50 rounded-lg px-4 py-1 text-white font-lilita text-2xl tracking-widest shadow-lg">03:00</div>
+                 </div>
                 <div>
                     <button id="reveal-btn" class="btn btn-yellow text-lg lg:text-xl shadow-lg">Reveal</button>
                     <button id="next-btn" class="btn btn-green text-lg lg:text-xl shadow-lg hidden">Next</button>
@@ -363,6 +376,7 @@
         const fullscreenBtn = document.getElementById('fullscreen-btn');
         const emojiBackground = document.getElementById('emoji-background');
         const qNumberSpan = document.getElementById('q-number');
+        const timerDisplay = document.getElementById('timer-display');
 
         // Choice Elements
         const choices = [
@@ -378,6 +392,11 @@
         let questionDeck = [];
         let currentQuestionIndex = 0;
         let currentQuestion = null; 
+        
+        // --- Timer State ---
+        let timerInterval = null;
+        let timeLeft = 180; // 3 minutes in seconds
+        let isTimeUp = false;
 
         // --- Setup Logic ---
         const defaultColors = ['#f43f5e', '#10b981', '#f59e0b', '#3b82f6'];
@@ -451,6 +470,70 @@
         }
         createFloatingEmojis();
 
+        // --- Audio Logic ---
+        function playAlarm() {
+            try {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                if (!AudioContext) return;
+                
+                const ctx = new AudioContext();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(440, ctx.currentTime);
+                osc.frequency.setValueAtTime(330, ctx.currentTime + 0.2);
+                osc.frequency.setValueAtTime(440, ctx.currentTime + 0.4);
+                
+                gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.8);
+                
+                osc.start();
+                osc.stop(ctx.currentTime + 0.8);
+            } catch (e) {
+                console.log('Audio error:', e);
+            }
+        }
+
+        // --- Timer Logic ---
+        function updateTimerDisplay() {
+            const m = Math.floor(timeLeft / 60).toString().padStart(2, '0');
+            const s = (timeLeft % 60).toString().padStart(2, '0');
+            timerDisplay.textContent = `${m}:${s}`;
+            
+            if (timeLeft <= 10) {
+                timerDisplay.classList.add('timer-low');
+            } else {
+                timerDisplay.classList.remove('timer-low');
+            }
+        }
+
+        function startTimer() {
+            clearInterval(timerInterval);
+            timeLeft = 180; // 3 minutes
+            isTimeUp = false;
+            updateTimerDisplay();
+            
+            timerInterval = setInterval(() => {
+                if (timeLeft > 0) {
+                    timeLeft--;
+                    updateTimerDisplay();
+                } else {
+                    stopTimer();
+                    isTimeUp = true;
+                    playAlarm();
+                    // Lock interactions automatically via isTimeUp flag checks in handlers
+                }
+            }, 1000);
+        }
+
+        function stopTimer() {
+            clearInterval(timerInterval);
+        }
+
         // --- Question Generation Logic ---
         function getRandomInt(min, max) {
             return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -507,16 +590,12 @@
                     const frac1 = f1.n * f2.d;
                     const frac2 = f2.n * f1.d;
 
-                    // If f2's fractional part is bigger than f1's, swapping them ensures f1's is bigger
-                    // Since f1.w >= f2.w, making f1's fraction bigger guarantees no borrowing is needed
                     if (frac2 > frac1) {
                         const tempN = f1.n; const tempD = f1.d;
                         f1.n = f2.n; f1.d = f2.d;
                         f2.n = tempN; f2.d = tempD;
                     }
 
-                    // Edge case: if exact same number, result is 0. 
-                    // Let's bump f1 up by 1 whole to make it a positive answer.
                     if (f1.w === f2.w && f1.n === f2.n && f1.d === f2.d) {
                         f1.w += 1;
                     }
@@ -547,6 +626,7 @@
         // Global function for undoing choice
         window.undoChoice = function(teamId) {
             if (isAnswered) return; // Can't undo after reveal
+            if (isTimeUp) return; // Can't undo if time is up
 
             const team = teams.find(t => t.id === teamId);
             if (!team || team.choice === null) return;
@@ -602,6 +682,9 @@
             nextBtn.classList.add('hidden');
             revealBtn.classList.remove('hidden');
             revealBtn.disabled = false;
+            
+            // Reset Timer
+            startTimer();
             
             teams.forEach(t => { t.choice = null; t.choiceTimestamp = null; });
             choices.forEach(c => {
@@ -685,6 +768,8 @@
             if (isAnswered) return;
             isAnswered = true;
             revealBtn.disabled = true;
+            
+            stopTimer(); // Ensure timer stops on reveal
 
             // Reveal Hidden Tokens!
             teams.forEach(team => {
@@ -752,6 +837,7 @@
         
         // --- Drag & Drop Logic ---
         function handleDrop(token, dropTarget) {
+            if (isTimeUp) return; // Prevent moves if time is up
             if (dropTarget.classList.contains('team-token-disc')) return; 
             
             let targetZone = null;
@@ -807,10 +893,20 @@
                 const badge = document.getElementById(`status-badge-${tokenTeamId}`);
                 if (badge) badge.classList.add('hidden');
             }
+            
+            // Check if all teams answered
+            const allAnswered = teams.every(t => t.choice !== null);
+            if (allAnswered) {
+                stopTimer();
+            }
         }
 
         function addInteractionListeners() {
             document.body.addEventListener('dragstart', (e) => {
+                if (isTimeUp) {
+                    e.preventDefault();
+                    return;
+                }
                 if (e.target.classList.contains('team-token-disc')) {
                     draggedItem = e.target;
                     setTimeout(() => { e.target.style.opacity = '0.5'; }, 0);
@@ -847,6 +943,7 @@
             let touchStartX, touchStartY, originalParent, currentDropZone = null;
 
             document.body.addEventListener('touchstart', (e) => {
+                if (isTimeUp) return;
                 if (e.target.classList.contains('team-token-disc')) {
                     draggedItem = e.target;
                     originalParent = draggedItem.parentElement;
